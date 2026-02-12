@@ -290,15 +290,45 @@ class RMSNorm(MultiPlatformOp):
                 flashinfer_allreduce_residual_rmsnorm,
             )
 
-            if get_tensor_model_parallel_world_size() > 1:
-                fused_result = flashinfer_allreduce_residual_rmsnorm(
-                    input_tensor=x,
-                    residual=residual,
-                    weight=self.weight,
+            if _use_aiter:
+                from sglang.srt.distributed.communication_op import (
+                    tensor_model_parallel_fused_allreduce_rmsnorm,
+                    tensor_model_parallel_fused_allreduce_rmsnorm_quant,
+                )
+                fp8_out = "fp8_e4m3fnuz" in quant_format
+                fused_op = tensor_model_parallel_fused_allreduce_rmsnorm_quant if fp8_out else tensor_model_parallel_fused_allreduce_rmsnorm
+                fused_result = fused_op(
+                    input_=x,
+                    residual_inp_=residual,
+                    weight_=self.weight,
                     eps=self.variance_epsilon,
                 )
-                if fused_result[0] is not None:
-                    return fused_result
+                if fp8_out:
+                    norm_out, residual_out, scale_out = fused_result
+                    return (norm_out, scale_out), residual_out
+                else:
+                    norm_out, residual_out = fused_result
+                    return norm_out, residual_out
+            else:
+                from sglang.srt.layers.flashinfer_comm_fusion import (
+                    flashinfer_allreduce_residual_rmsnorm,
+                )
+
+                fused_op = (
+                    torch.ops.sglang.flashinfer_allreduce_residual_rmsnorm
+                    if supports_custom_op()
+                    else flashinfer_allreduce_residual_rmsnorm
+                )
+
+                if get_tensor_model_parallel_world_size() > 1:
+                    fused_result = fused_op(
+                        input_tensor=x,
+                        residual=residual,
+                        weight=self.weight,
+                        eps=self.variance_epsilon,
+                    )
+                    if fused_result[0] is not None:
+                        return fused_result
 
         return self.forward(x, residual)
 
