@@ -80,10 +80,6 @@ if _use_aiter and _is_gfx95_supported:
 elif _is_npu:
     from sglang.srt.hardware_backend.npu.cmo import prepare_weight_cache
 
-
-if _use_aiter and get_bool_env_var("SGLANG_USE_AITER_ALLREDUCE"):
-    FUSE_ALLREDUCE_MAX_BATCH_SIZE = 4096
-
 FUSE_ALLREDUCE_MAX_BATCH_SIZE = 2048
 
 
@@ -415,9 +411,7 @@ class LayerCommunicator:
             ):
                 hidden_states, residual = (
                     self.input_layernorm.forward_with_allreduce_fusion(
-                        hidden_states,
-                        residual,
-                        quant_format=quant_format,
+                        hidden_states, residual
                     )
                 )
             else:
@@ -587,20 +581,13 @@ class LayerCommunicator:
         if batch_size > FUSE_ALLREDUCE_MAX_BATCH_SIZE:
             return False
 
-        if _use_aiter:  # aiter allreduce fusion
-            static_conditions_met = (
-                (not self.is_last_layer)
-                and (self._context.tp_size > 1)
-                and get_global_server_args().enable_aiter_allreduce_fusion
-            )
-        else:  # flashinfer allreduce fusion
-            static_conditions_met = (
-                (not self.is_last_layer)
-                and (self._context.tp_size > 1)
-                and not is_dp_attention_enabled()
-                and get_global_server_args().enable_flashinfer_allreduce_fusion
-                and _is_flashinfer_available
-            )
+        static_conditions_met = (
+            (not self.is_last_layer)
+            and (self._context.tp_size > 1)
+            and not is_dp_attention_enabled()
+            and get_global_server_args().enable_flashinfer_allreduce_fusion
+            and _is_flashinfer_available
+        )
 
         if not static_conditions_met:
             return False
@@ -751,7 +738,6 @@ class CommunicateWithAllReduceAndLayerNormFn:
         forward_batch: ForwardBatch,
         layernorm: torch.nn.Module,
         context: CommunicateContext,
-        quant_format: str = "",
     ):
         # TODO move these `if shape != 0` into LayerNorm itself
         if hidden_states.shape[0] != 0:
@@ -767,7 +753,6 @@ class CommunicateWithAllReduceAndLayerNormFn:
         context: CommunicateContext,
         *,
         residual_input_mode,
-        quant_format: str = "",
     ):
         if get_attn_tp_context().input_scattered:
             return CommunicateWithAllReduceAndLayerNormFn._tp_all_reduce_with_scattered_residual(
@@ -815,22 +800,10 @@ class CommunicateWithAllReduceAndLayerNormFn:
                 and _is_flashinfer_available
                 and hasattr(layernorm, "forward_with_allreduce_fusion")
                 and get_global_server_args().enable_flashinfer_allreduce_fusion
-                and hidden_states.shape[0]
-                <= FUSE_ALLREDUCE_MAX_BATCH_SIZE  ### TODO: need to check if this is correct
+                and hidden_states.shape[0] <= 2048
             ):
                 hidden_states, residual = layernorm.forward_with_allreduce_fusion(
                     hidden_states, residual
-                )
-            elif (
-                _use_aiter
-                and hasattr(layernorm, "forward_with_allreduce_fusion")
-                and get_global_server_args().enable_aiter_allreduce_fusion
-                and hidden_states.shape[0] > 128
-            ):
-                hidden_states, residual = layernorm.forward_with_allreduce_fusion(
-                    hidden_states,
-                    residual,
-                    quant_format=quant_format,
                 )
             else:
                 hidden_states = tensor_model_parallel_all_reduce(hidden_states)
@@ -848,7 +821,6 @@ class CommunicateWithAllReduceAndLayerNormFn:
         context: CommunicateContext,
         *,
         residual_input_mode,
-        quant_format: str = "",
     ):
         input_hidden_states = hidden_states
         hidden_states = hidden_states.tensor_split(context.attn_tp_size)[

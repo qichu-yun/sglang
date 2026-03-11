@@ -119,8 +119,7 @@ class RotaryEmbedding(MultiPlatformOp):
             and not (_is_cpu)
             and not (_is_xpu)
         ):
-            # if _is_cuda or _is_hip: 3### TODO: NEED TO CHECK FOR HIP
-            if _is_cuda:
+            if _is_cuda or _is_hip:
                 from sgl_kernel import rotary_embedding
             else:
                 from vllm._custom_ops import rotary_embedding
