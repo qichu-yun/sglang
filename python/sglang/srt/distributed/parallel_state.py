@@ -698,7 +698,7 @@ class GroupCoordinator:
                 input_, residual_inp_, weight_, eps, group_name=self.unique_name
             )
 
-    def reduce_scatter_tensor(
+    def _reduce_scatter_tensor(
         self,
         output: torch.Tensor,
         input: torch.Tensor,
